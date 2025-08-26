@@ -1,10 +1,14 @@
-import argparse
 import os
+os.environ["PYOPENGL_PLATFORM"] = "glx"
+os.environ["MUJOCO_GL"] = "glfw" 
+os.environ["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
+os.environ["DISPLAY"] = ":0"
+
+import argparse
 import pickle
 from importlib import metadata
 
-import torch
-
+import torch 
 try:
     try:
         if metadata.version("rsl-rl"):
@@ -25,6 +29,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-e", "--exp_name", type=str, default="go2-walking")
     parser.add_argument("--ckpt", type=int, default=100)
+    parser.add_argument("--show_viewer", action="store_true", help="Show the viewer window")
     args = parser.parse_args()
 
     gs.init()
@@ -39,7 +44,7 @@ def main():
         obs_cfg=obs_cfg,
         reward_cfg=reward_cfg,
         command_cfg=command_cfg,
-        show_viewer=True,
+        show_viewer=args.show_viewer,
     )
 
     runner = OnPolicyRunner(env, train_cfg, log_dir, device=gs.device)
@@ -60,4 +65,4 @@ if __name__ == "__main__":
 """
 # evaluation
 python examples/locomotion/go2_eval.py -e go2-walking -v --ckpt 100
-"""
+""" 
