@@ -1,10 +1,5 @@
-import os
-os.environ["PYOPENGL_PLATFORM"] = "glx"
-os.environ["MUJOCO_GL"] = "glfw" 
-os.environ["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
-os.environ["DISPLAY"] = ":0"
-
 import argparse
+import os
 import pickle
 import shutil
 from importlib import metadata
@@ -25,7 +20,7 @@ from rsl_rl.runners import OnPolicyRunner
 
 import genesis as gs
 
-from grasp_env import GraspEnv
+from grasp_env_ur5e import GraspEnvUR5e
 
 
 def get_train_cfg(exp_name, max_iterations):
@@ -90,12 +85,12 @@ def get_cfgs():
         "keypoints": 1.0,
         "table_contact": -1.0,  # Negative scale for penalty
     }
-    # panda robot specific
+    # UR5e robot specific
     robot_cfg = {
-        "ee_link_name": "hand",
-        "gripper_link_names": ["left_finger", "right_finger"],
-        "default_arm_dof": [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785],
-        "default_gripper_dof": [0.04, 0.04],
+        "ee_link_name": "ee_virtual_link",
+        "gripper_link_names": [],  # UR5e doesn't have gripper by default
+        "default_arm_dof": [-1.5708, -1.5708, 1.5708, -1.5708, -1.5708, 0.0],
+        "default_gripper_dof": None,  # No gripper DOFs
         "ik_method": "dls_ik",
     }
     return env_cfg, reward_scales, robot_cfg
@@ -103,7 +98,7 @@ def get_cfgs():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-e", "--exp_name", type=str, default="grasp")
+    parser.add_argument("-e", "--exp_name", type=str, default="grasp_ur5e")
     parser.add_argument("-v", "--vis", action="store_true", default=False)
     parser.add_argument("-B", "--num_envs", type=int, default=200)
     parser.add_argument("--max_iterations", type=int, default=500)
@@ -127,7 +122,7 @@ def main():
         open(f"{log_dir}/cfgs.pkl", "wb"),
     )
 
-    env = GraspEnv(
+    env = GraspEnvUR5e(
         num_envs=args.num_envs,
         env_cfg=env_cfg,
         reward_cfg=reward_scales,
@@ -145,5 +140,5 @@ if __name__ == "__main__":
 
 """
 # training
-python examples/manipulation/grasp_train.py
+python examples/manipulation/grasp_train_ur5e.py
 """

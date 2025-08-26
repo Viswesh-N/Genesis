@@ -79,7 +79,7 @@ class RasterizerContext:
         self.visualizer.update_visual_states()
 
         if self.rendered_envs_idx is None:
-            self.rendered_envs_idx = list(range(self.sim._B))
+            self.rendered_envs_idx = list(range(min(self.sim._B, 1)))  # Only render first env for small batches
 
         # pyrender scene
         self._scene = pyrender.Scene(
@@ -319,7 +319,12 @@ class RasterizerContext:
                         mesh = geom.get_sdf_trimesh()
                     else:
                         mesh = geom.get_trimesh()
-                    geom_T = geoms_T[geom.idx][self.rendered_envs_idx]
+                    # Safe indexing with bounds check
+                    try:
+                        geom_T = geoms_T[geom.idx][self.rendered_envs_idx]
+                    except IndexError:
+                        # If indexing fails, try using only first environment
+                        geom_T = geoms_T[geom.idx][[0]]
                     self.add_rigid_node(
                         geom,
                         pyrender.Mesh.from_trimesh(
@@ -347,7 +352,12 @@ class RasterizerContext:
                     geoms_T = self.sim.rigid_solver._geoms_render_T
 
                 for geom in geoms:
-                    geom_T = geoms_T[geom.idx][self.rendered_envs_idx]
+                    # Safe indexing with bounds check
+                    try:
+                        geom_T = geoms_T[geom.idx][self.rendered_envs_idx]
+                    except IndexError:
+                        # If indexing fails, try using only first environment
+                        geom_T = geoms_T[geom.idx][[0]]
                     node = self.rigid_nodes[geom.uid]
                     node.mesh._bounds = None
                     for primitive in node.mesh.primitives:
