@@ -5,8 +5,7 @@ from importlib import metadata
 
 os.environ["PYOPENGL_PLATFORM"] = "glx"
 os.environ["MUJOCO_GL"] = "glfw" 
-os.environ["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
-os.environ["DISPLAY"] = ":0"
+# os.environ["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
 
 
 import torch

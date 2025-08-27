@@ -2,7 +2,8 @@ import argparse
 import os
 import pickle
 from importlib import metadata
-
+os.environ["PYOPENGL_PLATFORM"] = "glx"
+os.environ["MUJOCO_GL"] = "glfw" 
 import torch
 
 try:
@@ -45,7 +46,7 @@ def main():
     env_cfg["box_fixed"] = False
 
     env = GraspEnv(
-        num_envs=10,
+        num_envs=1,
         env_cfg=env_cfg,
         reward_cfg=reward_cfg,
         robot_cfg=robot_cfg,
