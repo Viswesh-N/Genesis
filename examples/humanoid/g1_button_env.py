@@ -25,9 +25,9 @@ class G1ButtonEnv:
         self.reward_scales = reward_cfg
         self.action_scales = torch.tensor(env_cfg["action_scales"], device=self.device)
 
-        self.button_pos = torch.tensor([0.8, 0.0, 1.2], device=self.device)
-        self.button_press_threshold = 0.02
-        self.button_pos_list = [0.8, 0.0, 1.2]  # as list for morph creation
+        self.target_pos = torch.tensor([0.8, 0.0, 1.0], device=self.device)  # Target position
+        self.target_pos_list = [0.8, 0.0, 1.0]  # as list for morph creation
+        self.reach_threshold = 0.1  # Success when within 10cm
 
         self.scene = gs.Scene(
             sim_options=gs.options.SimOptions(dt=self.ctrl_dt, substeps=2),
@@ -53,20 +53,20 @@ class G1ButtonEnv:
             material=gs.materials.Rigid(),
             surface=gs.surfaces.Default(color=(0.5, 0.5, 0.5)),
             morph=gs.morphs.Box(
-                pos=(0.9, 0, 1.0),
-                size=(0.05, 2.0, 2.0),
+                pos=(0.9, 0, 0.8),  # Lower wall to match new button height
+                size=(0.05, 2.0, 1.6),  # Make wall shorter since robot is lower
                 fixed=True,
             )
         )
 
-        self.button = self.scene.add_entity(
-            material=gs.materials.Rigid(),
+        # Simple red target sphere (no physics, just visual)
+        self.target = self.scene.add_entity(
             surface=gs.surfaces.Default(color=(1.0, 0.0, 0.0)),
-            morph=gs.morphs.Cylinder(
-                pos=self.button_pos_list,
-                radius=0.03,
-                height=0.05,
-                quat=(0.7071, 0, 0.7071, 0),
+            morph=gs.morphs.Sphere(
+                pos=self.target_pos_list,
+                radius=0.05,
+                fixed=True,
+                collision=False,  # No collision, just visual target
             )
         )
 
@@ -75,8 +75,8 @@ class G1ButtonEnv:
         self.robot = self.scene.add_entity(
             morph=gs.morphs.URDF(
                 file=g1_urdf_path,
-                pos=(0, 0, 1.0),  # Raise robot so legs are visible
-                fixed=True,
+                pos=(0, 0, 0.85),  # Position so feet touch the ground
+                fixed=False,  # Allow robot to move
             )
         )
         print(f"Using G1 URDF: {g1_urdf_path}")
@@ -159,8 +159,8 @@ class G1ButtonEnv:
         
         # Set very high damping for frozen joints to keep them still
         for frozen_joint_idx in frozen_joints:
-            kp[frozen_joint_idx] = 10000.0  # Very high position gain
-            kv[frozen_joint_idx] = 1000.0   # Very high velocity damping
+            kp[frozen_joint_idx] = 50000.0  # Even higher position gain for stability
+            kv[frozen_joint_idx] = 2000.0   # Even higher velocity damping
         
         self.robot.set_dofs_kp(kp)
         self.robot.set_dofs_kv(kv)
@@ -179,14 +179,7 @@ class G1ButtonEnv:
         self.extras = dict()
         self.extras["observations"] = dict()
 
-        # initial button positions
-        initial_pos = self.button.get_pos()  # This could be (3,) or (num_envs, 3)
-        if initial_pos.dim() == 1:
-            # Single environment: (3,) -> (1, 3)
-            self.initial_button_pos = initial_pos.unsqueeze(0)
-        else:
-            # Multi environment: already (num_envs, 3)
-            self.initial_button_pos = initial_pos.clone()
+        # Target is fixed, no need to track initial position
         
         # reset all environments
         self.reset_idx(torch.arange(self.num_envs, device=self.device))
@@ -254,14 +247,7 @@ class G1ButtonEnv:
                 self.robot.set_dofs_position(frozen_positions, self.frozen_joints, envs_idx)
                 self.robot.set_dofs_velocity(frozen_velocities, self.frozen_joints, envs_idx)
 
-        # reset button position
-        if self.num_envs == 1:
-            # For single environment, use the stored position directly
-            self.button.set_pos(self.initial_button_pos[0])
-        else:
-            # For multiple environments, reset selected environments
-            button_pos = self.initial_button_pos[envs_idx]
-            self.button.set_pos(button_pos, envs_idx)
+        # Target is fixed, no need to reset position
 
         # reset episode tracking
         self.episode_length_buf[envs_idx] = 0
@@ -282,6 +268,19 @@ class G1ButtonEnv:
 
     def step(self, actions):
         """Step the environment"""
+        # Clip actions to prevent extreme values (following Go2 pattern)
+        actions = torch.clamp(actions, -1.0, 1.0)
+        
+        # Store last actions for observation
+        all_joint_pos = self.robot.get_dofs_position()
+        if self.num_envs == 1:
+            if all_joint_pos.dim() == 1:
+                self.last_actions = all_joint_pos[self.actuated_joints].unsqueeze(0)
+            else:
+                self.last_actions = all_joint_pos[:, self.actuated_joints]
+        else:
+            self.last_actions = all_joint_pos[:, self.actuated_joints]
+        
         # scale and apply actions
         scaled_actions = actions * self.action_scales
         
@@ -294,10 +293,16 @@ class G1ButtonEnv:
             selected_joints = self.actuated_joints[:n_actions]
             self.robot.control_dofs_position(scaled_actions[:, :n_actions], selected_joints)
         
-        # Continuously set frozen joints to 0 position with 0 velocity target
-        frozen_positions = torch.zeros(self.num_envs, len(self.frozen_joints), device=self.device)
+        # Continuously set frozen joints to standing position
         if len(self.frozen_joints) > 0:
-            self.robot.control_dofs_position(frozen_positions, self.frozen_joints)
+            standing_positions = [
+                -0.1, 0.0, 0.0, 0.2, -0.1, 0.0,  # Left leg
+                -0.1, 0.0, 0.0, 0.2, -0.1, 0.0   # Right leg
+            ]
+            if len(standing_positions) >= len(self.frozen_joints):
+                frozen_pos_tensor = torch.tensor(standing_positions[:len(self.frozen_joints)], device=self.device)
+                frozen_pos_tensor = frozen_pos_tensor.unsqueeze(0).repeat(self.num_envs, 1)
+                self.robot.control_dofs_position(frozen_pos_tensor, self.frozen_joints)
 
         # step simulation
         self.scene.step()
@@ -325,132 +330,196 @@ class G1ButtonEnv:
 
     def compute_observations(self):
         """Compute observations for all environments"""
-        # robot joint positions and velocities
-        joint_pos = self.robot.get_dofs_position()  # (num_envs, n_dofs) or (n_dofs,)
-        joint_vel = self.robot.get_dofs_velocity()  # (num_envs, n_dofs) or (n_dofs,)
+        # robot joint positions and velocities (only actuated joints)
+        all_joint_pos = self.robot.get_dofs_position()
+        all_joint_vel = self.robot.get_dofs_velocity()
+        
+        # Extract only actuated joints
+        if self.num_envs == 1:
+            if all_joint_pos.dim() == 1:
+                joint_pos = all_joint_pos[self.actuated_joints].unsqueeze(0)
+                joint_vel = all_joint_vel[self.actuated_joints].unsqueeze(0)
+            else:
+                joint_pos = all_joint_pos[:, self.actuated_joints]
+                joint_vel = all_joint_vel[:, self.actuated_joints]
+        else:
+            joint_pos = all_joint_pos[:, self.actuated_joints]
+            joint_vel = all_joint_vel[:, self.actuated_joints]
+
+        # Get robot base orientation and compute projected gravity (like Go2)
+        base_quat = self.robot.get_quat()  # (num_envs, 4) or (4,)
+        if self.num_envs == 1 and base_quat.dim() == 1:
+            base_quat = base_quat.unsqueeze(0)
+        
+        # Compute projected gravity vector
+        global_gravity = torch.tensor([0.0, 0.0, -1.0], device=self.device).unsqueeze(0)
+        if self.num_envs > 1:
+            global_gravity = global_gravity.repeat(self.num_envs, 1)
+            
+        from genesis.utils.geom import transform_by_quat, inv_quat
+        inv_base_quat = inv_quat(base_quat)
+        projected_gravity = transform_by_quat(global_gravity, inv_base_quat)
 
         # end effector position
-        ee_pos = self.robot.get_links_pos([self.end_effector_idx])  # (num_envs, 1, 3) or (1, 3)
-        
-        # button position (target)
-        button_pos = self.button.get_pos()  # (num_envs, 3) or (3,)
-
-        # handle single vs multiple environment cases
+        ee_pos = self.robot.get_links_pos([self.end_effector_idx])
         if self.num_envs == 1:
-            # ensure all are 2D for consistency (1, N)
-            if joint_pos.dim() == 1:
-                joint_pos = joint_pos.unsqueeze(0)  # (n_dofs,) -> (1, n_dofs)
-            if joint_vel.dim() == 1:
-                joint_vel = joint_vel.unsqueeze(0)  # (n_dofs,) -> (1, n_dofs)
-            
-            # handle end effector position
-            ee_pos = ee_pos.squeeze()  # remove all singleton dims
+            ee_pos = ee_pos.squeeze()
             if ee_pos.dim() == 1:
-                ee_pos = ee_pos.unsqueeze(0)  # (3,) -> (1, 3)
-                
-            # handle button position
-            if button_pos.dim() == 1:
-                button_pos = button_pos.unsqueeze(0)  # (3,) -> (1, 3)
-                
-            initial_button_pos = self.initial_button_pos  # already (1, 3)
+                ee_pos = ee_pos.unsqueeze(0)
         else:
-            ee_pos = ee_pos.squeeze(1)  # (num_envs, 1, 3) -> (num_envs, 3)
-            # For multi-env, initial_button_pos should be (num_envs, 3)
-            if self.initial_button_pos.shape[0] == 1:
-                initial_button_pos = self.initial_button_pos.repeat(self.num_envs, 1)
-            else:
-                initial_button_pos = self.initial_button_pos
+            ee_pos = ee_pos.squeeze(1)
+        
+        # target position (fixed)
+        target_pos = self.target_pos
+        if self.num_envs == 1:
+            target_pos = target_pos.unsqueeze(0)
+        else:
+            target_pos = target_pos.unsqueeze(0).repeat(self.num_envs, 1)
 
-        # distance to button
-        distance_to_button = torch.norm(ee_pos - button_pos, dim=1, keepdim=True)  # (num_envs, 1)
+        # relative position (ee to target) - more important than absolute positions
+        rel_pos = target_pos - ee_pos
+        
+        # distance to target
+        distance_to_target = torch.norm(rel_pos, dim=1, keepdim=True)
 
-        # button displacement from initial position
-        button_displacement = torch.norm(button_pos - initial_button_pos, dim=1, keepdim=True)  # (num_envs, 1)
+        # previous action (for action smoothness)
+        if not hasattr(self, 'last_actions'):
+            self.last_actions = torch.zeros_like(joint_pos[:, :self.n_actuated_joints])
+        
+        # Apply observation scaling (following Go2 pattern)
+        joint_pos_scaled = joint_pos * 1.0  # joint positions don't need heavy scaling
+        joint_vel_scaled = joint_vel * 0.05  # scale down velocities
+        rel_pos_scaled = rel_pos * 2.0  # emphasize relative position
+        distance_scaled = distance_to_target * 5.0  # emphasize distance
 
-
-        # concatenate observations
+        # concatenate observations (following successful patterns)
         obs = torch.cat([
-            joint_pos,      # robot joint positions
-            joint_vel,      # robot joint velocities  
-            ee_pos,         # end effector position
-            button_pos,     # button position (target)
-            distance_to_button,    # distance to button
-            button_displacement,   # how much button has moved
+            projected_gravity,      # 3 - orientation info (like Go2)
+            joint_pos_scaled,       # n_joints - joint positions 
+            joint_vel_scaled,       # n_joints - joint velocities
+            rel_pos_scaled,         # 3 - relative position to target (most important)
+            distance_scaled,        # 1 - distance to target
+            self.last_actions,      # n_joints - previous actions
         ], dim=1)
 
         return obs
 
     # ------------ reward functions following Genesis patterns ----------------
     def _reward_distance(self):
-        """Distance reward (closer is better)"""
+        """Dense distance reward with exponential decay"""
         ee_pos = self.robot.get_links_pos([self.end_effector_idx])
-        button_pos = self.button.get_pos()
+        target_pos = self.target_pos
         
         # handle single vs multiple environment cases
         if self.num_envs == 1:
             ee_pos = ee_pos.squeeze(0)
-            distance_to_button = torch.norm(ee_pos - button_pos)
-            distance_to_button = distance_to_button.unsqueeze(0)  # make (1,)
+            distance_to_target = torch.norm(ee_pos - target_pos)
+            distance_to_target = distance_to_target.unsqueeze(0)  # make (1,)
         else:
             ee_pos = ee_pos.squeeze(1)
-            distance_to_button = torch.norm(ee_pos - button_pos, dim=1)
+            distance_to_target = torch.norm(ee_pos - target_pos, dim=1)
         
-        return torch.exp(-distance_to_button * 5.0)
+        # Linear distance reward with better gradient
+        # Negative distance + small constant to keep positive
+        max_distance = 3.0  # Maximum expected distance
+        normalized_distance = torch.clamp(distance_to_target / max_distance, 0.0, 1.0)
+        return (1.0 - normalized_distance) * 2.0  # Scale to [0, 2] range
     
-    def _reward_reach(self):
-        """Reaching reward (bonus when very close)"""
+    def _reward_reach_target(self):
+        """Sparse bonus reward for reaching the target"""
         ee_pos = self.robot.get_links_pos([self.end_effector_idx])
-        button_pos = self.button.get_pos()
+        target_pos = self.target_pos
         
         # handle single vs multiple environment cases
         if self.num_envs == 1:
             ee_pos = ee_pos.squeeze(0)
-            distance_to_button = torch.norm(ee_pos - button_pos)
-            distance_to_button = distance_to_button.unsqueeze(0)  # make (1,)
+            distance_to_target = torch.norm(ee_pos - target_pos)
+            distance_to_target = distance_to_target.unsqueeze(0)  # make (1,)
         else:
             ee_pos = ee_pos.squeeze(1)
-            distance_to_button = torch.norm(ee_pos - button_pos, dim=1)
+            distance_to_target = torch.norm(ee_pos - target_pos, dim=1)
         
-        return (distance_to_button < 0.1).float() * 0.5
-    
-    def _reward_press(self):
-        """Button press reward (big bonus for actually pressing)"""
-        button_pos = self.button.get_pos()
+        # Scaled bonus for getting close to target
+        close_bonus = torch.clamp((self.reach_threshold - distance_to_target) / self.reach_threshold, 0.0, 1.0)
+        target_reached = (distance_to_target < self.reach_threshold).float()
+        return close_bonus * 5.0 + target_reached * 20.0  # Progressive bonus + big final bonus
         
+    def _reward_action_rate(self):
+        """Penalize large changes in actions (smoothness)"""
+        if not hasattr(self, 'last_actions'):
+            return torch.zeros(self.num_envs, device=self.device)
+        
+        # Get current actions
+        all_joint_pos = self.robot.get_dofs_position()
         if self.num_envs == 1:
-            button_displacement = torch.norm(button_pos - self.initial_button_pos)
-            button_displacement = button_displacement.unsqueeze(0)  # make (1,)
-        else:
-            if self.initial_button_pos.shape[0] == 1:
-                initial_button_pos = self.initial_button_pos.repeat(self.num_envs, 1)
+            if all_joint_pos.dim() == 1:
+                current_joint_pos = all_joint_pos[self.actuated_joints].unsqueeze(0)
             else:
-                initial_button_pos = self.initial_button_pos
-            button_displacement = torch.norm(button_pos - initial_button_pos, dim=1)
+                current_joint_pos = all_joint_pos[:, self.actuated_joints]
+        else:
+            current_joint_pos = all_joint_pos[:, self.actuated_joints]
         
-        button_pressed = (button_displacement > self.button_press_threshold).float()
-        return button_pressed * 10.0
+        # Penalize rapid changes
+        action_diff = torch.sum(torch.square(current_joint_pos - self.last_actions), dim=1)
+        return action_diff
+        
+    def _reward_energy(self):
+        """Penalize high joint velocities (energy consumption)"""
+        all_joint_vel = self.robot.get_dofs_velocity()
+        if self.num_envs == 1:
+            if all_joint_vel.dim() == 1:
+                joint_vel = all_joint_vel[self.actuated_joints].unsqueeze(0)
+            else:
+                joint_vel = all_joint_vel[:, self.actuated_joints]
+        else:
+            joint_vel = all_joint_vel[:, self.actuated_joints]
+        
+        # Penalize high velocities
+        return torch.sum(torch.square(joint_vel), dim=1)
+    
+    def _reward_stability(self):
+        """Penalize excessive base movement/tilting"""
+        base_pos = self.robot.get_pos()
+        base_quat = self.robot.get_quat()
+        
+        # Handle single vs multiple environment cases
+        if self.num_envs == 1:
+            if base_pos.dim() == 1:
+                base_pos = base_pos.unsqueeze(0)
+            if base_quat.dim() == 1:
+                base_quat = base_quat.unsqueeze(0)
+        
+        # Penalize base movement in X and Y (should stay roughly in place)
+        base_xy_movement = torch.sum(torch.square(base_pos[:, :2]), dim=1)
+        
+        # Penalize excessive tilting (quaternion should stay close to upright)
+        from genesis.utils.geom import quat_to_xyz
+        base_euler = quat_to_xyz(base_quat, rpy=True, degrees=False)
+        tilt_penalty = torch.sum(torch.square(base_euler[:, :2]), dim=1)  # Roll and pitch
+        
+        return base_xy_movement + tilt_penalty * 5.0  # Weight tilt more heavily
 
     def compute_dones(self):
         """Compute done flags for all environments"""
         # episode timeout
         timeout = self.episode_length_buf >= self.max_episode_length
         
-        # task success (button pressed)
-        button_pos = self.button.get_pos()
-        if self.num_envs == 1:
-            button_displacement = torch.norm(button_pos - self.initial_button_pos)  # scalar
-            button_displacement = button_displacement.unsqueeze(0)  # make it (1,)
-        else:
-            # Handle initial_button_pos for multi-env dones
-            if self.initial_button_pos.shape[0] == 1:
-                initial_button_pos = self.initial_button_pos.repeat(self.num_envs, 1)
-            else:
-                initial_button_pos = self.initial_button_pos
-            button_displacement = torch.norm(button_pos - initial_button_pos, dim=1)
+        # Optional: task success (hand reaches target) - but let's disable for now
+        # ee_pos = self.robot.get_links_pos([self.end_effector_idx])
+        # if self.num_envs == 1:
+        #     ee_pos = ee_pos.squeeze(0)
+        #     distance_to_target = torch.norm(ee_pos - self.target_pos)
+        #     success = distance_to_target < self.reach_threshold
+        #     success = success.unsqueeze(0)
+        # else:
+        #     ee_pos = ee_pos.squeeze(1)
+        #     distance_to_target = torch.norm(ee_pos - self.target_pos, dim=1)
+        #     success = distance_to_target < self.reach_threshold
         
-        success = button_displacement > self.button_press_threshold
+        # For now, only terminate on timeout to let robot learn
+        success = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
         
-        # done if timeout or success
+        # done if timeout (or success when enabled)
         done = timeout | success
         
         return done

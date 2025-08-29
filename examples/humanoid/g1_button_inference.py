@@ -79,10 +79,10 @@ def load_model(model_path, num_obs, num_actions, device):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="G1 Button Push Inference")
+    parser = argparse.ArgumentParser(description="G1 Target Reaching Inference")
     parser.add_argument("--model_path", type=str, default=None, help="Path to trained model (optional)")
     parser.add_argument("--g1_urdf", type=str, default=None, help="Path to G1 URDF file")
-    parser.add_argument("--num_episodes", type=int, default=10, help="Number of episodes to run")
+    parser.add_argument("--num_episodes", type=int, default=200, help="Number of episodes to run")
     args = parser.parse_args()
 
     # Initialize Genesis
@@ -98,9 +98,9 @@ def main():
     }
     
     reward_cfg = {
-        "distance": 1.0,
-        "reach": 2.0,
-        "press": 20.0,
+        "distance": 10.0,
+        "reach": 5.0,
+        "reach_target": 20.0,
     }
     
     robot_cfg = {
@@ -110,10 +110,9 @@ def main():
     }
     
     if args.model_path and args.model_path.endswith('.pt'):
-        # Try to load configs from the same directory
+
         log_dir = "/".join(args.model_path.split("/")[:-1])
         try:
-            # Try loading from new Genesis pattern (single cfgs.pkl file)
             cfgs = pickle.load(open(f"{log_dir}/cfgs.pkl", "rb"))
             env_cfg, reward_cfg, robot_cfg = cfgs[0], cfgs[1], cfgs[2]
             print("Loaded configuration from training logs")
@@ -136,11 +135,12 @@ def main():
         policy = load_model(args.model_path, env_cfg["num_obs"], env_cfg["num_actions"], gs.device)
 
     print("\n" + "="*60)
-    print("🤖 G1 BUTTON PUSH INFERENCE")
+    print("G1 TARGET REACHING INFERENCE")
     print("="*60)
     print(f"Episodes to run: {args.num_episodes}")
     print(f"Policy: {'Trained' if policy else 'Random'}")
     print(f"Robot: {'G1 URDF' if args.g1_urdf else 'Default Humanoid'}")
+    print(f"Target position: {env.target_pos.tolist()}")
     print("="*60 + "\n")
 
     # Run inference episodes
@@ -174,29 +174,26 @@ def main():
             done = dones[0].item()
             step_count += 1
             
-            # Check if button was pressed
-            button_pos = env.button.get_pos()
-            if button_pos.dim() == 1:
-                button_pos = button_pos.unsqueeze(0)
+            # Check if target was reached
+            ee_pos = env.robot.get_links_pos([env.end_effector_idx]).squeeze()
+            target_pos = env.target_pos
             
-            button_displacement = torch.norm(button_pos[0] - env.initial_button_pos[0])
-            is_success = button_displacement > env.button_press_threshold
+            distance_to_target = torch.norm(ee_pos - target_pos).item()
+            is_success = distance_to_target < env.reach_threshold
             
             # Print status every 50 steps
             if step_count % 50 == 0:
-                ee_pos = env.robot.get_links_pos([env.end_effector_idx]).squeeze()
-                distance_to_button = torch.norm(ee_pos - button_pos[0]).item()
                 print(f"  Step {step_count:3d}: Reward={episode_reward:6.2f}, "
-                      f"Dist to button={distance_to_button:.3f}m, "
-                      f"Button displaced={button_displacement:.3f}m")
+                      f"Dist to target={distance_to_target:.3f}m, "
+                      f"Target reached={is_success}")
         
         # Episode summary
         total_rewards.append(episode_reward)
         if is_success:
             success_count += 1
-            print(f"  ✅ SUCCESS! Button pressed (displacement: {button_displacement:.3f}m)")
+            print(f"  SUCCESS! Target reached (distance: {distance_to_target:.3f}m)")
         else:
-            print(f"  ❌ Failed to press button (displacement: {button_displacement:.3f}m)")
+            print(f"  Failed to reach target (distance: {distance_to_target:.3f}m)")
         
         print(f"  Episode reward: {episode_reward:.2f}, Steps: {step_count}\n")
 
@@ -205,7 +202,7 @@ def main():
     success_rate = success_count / args.num_episodes
     
     print("="*60)
-    print("📊 INFERENCE RESULTS")
+    print("INFERENCE RESULTS")
     print("="*60)
     print(f"Total Episodes: {args.num_episodes}")
     print(f"Successful Episodes: {success_count}")
@@ -215,13 +212,13 @@ def main():
     print("="*60)
     
     if success_rate > 0.8:
-        print("🎉 Excellent performance!")
+        print("Excellent performance!")
     elif success_rate > 0.5:
-        print("👍 Good performance!")
+        print("Good performance!")
     elif success_rate > 0.2:
-        print("📈 Room for improvement")
+        print("Room for improvement")
     else:
-        print("🔧 Needs more training")
+        print("Needs more training")
 
 
 if __name__ == "__main__":

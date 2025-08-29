@@ -26,23 +26,23 @@ def get_train_cfg(exp_name, max_iterations):
             "class_name": "PPO",
             "clip_param": 0.2,
             "desired_kl": 0.01,
-            "entropy_coef": 0.01,
-            "gamma": 0.99,
+            "entropy_coef": 0.02,      
+            "gamma": 0.98,             
             "lam": 0.95,
-            "learning_rate": 0.0003,
-            "max_grad_norm": 1.0,
-            "num_learning_epochs": 5,
-            "num_mini_batches": 4,
+            "learning_rate": 0.0003,   # Lower learning rate for manipulation
+            "max_grad_norm": 0.5,      # Smaller gradient clipping
+            "num_learning_epochs": 5,   # Fewer epochs per iteration
+            "num_mini_batches": 4,     
             "schedule": "adaptive",
             "use_clipped_value_loss": True,
-            "value_loss_coef": 1.0,
+            "value_loss_coef": 2.0,    
         },
         "init_member_classes": {},
         "policy": {
             "activation": "relu",
-            "actor_hidden_dims": [512, 256, 128],
-            "critic_hidden_dims": [512, 256, 128],
-            "init_noise_std": 1.0,
+            "actor_hidden_dims": [256, 128, 64],     
+            "critic_hidden_dims": [256, 128, 64],
+            "init_noise_std": 0.3,     # Reduced noise for manipulation
             "class_name": "ActorCritic",
         },
         "runner": {
@@ -57,7 +57,7 @@ def get_train_cfg(exp_name, max_iterations):
             "run_name": "",
         },
         "runner_class_name": "OnPolicyRunner",
-        "num_steps_per_env": 24,
+        "num_steps_per_env": 64,   # More steps per environment
         "save_interval": 50,
         "empirical_normalization": None,
         "seed": 1,
@@ -72,22 +72,24 @@ def get_cfgs():
         "num_obs": 50,  # will be adjusted based on robot DOFs
         "num_actions": 20,  # will be adjusted based on robot actuated joints
         "ctrl_dt": 0.02,  # 50 Hz control
-        "episode_length_s": 10.0,  # 10 second episodes
-        "action_scales": [0.5] * 20,  # will be adjusted, conservative scaling
-        "button_pos": [0.8, 0.0, 1.2],
-        "button_press_threshold": 0.02,
+        "episode_length_s": 10.0,  
+        "action_scales": [0.5] * 20,  
+        "target_pos": [0.8, 0.0, 1.0],
+        "reach_threshold": 0.1,
     }
     
     reward_scales = {
-        "distance": 1.0,    # reward for being close to button
-        "reach": 2.0,       # bonus for getting very close
-        "press": 20.0,      # big reward for pressing button
+        "distance": 10.0,        
+        "reach_target": 100.0,   
+        "action_rate": -0.005,   
+        "energy": -0.0005,       
+        "stability": -1.0,       
     }
     
     robot_cfg = {
         "g1_urdf_path": "/home/viswesh/grid/ManiSkill/mani_skill/assets/robots/g1_humanoid/g1.urdf",
-        "kp": 100.0,  # position control gains
-        "kv": 10.0,   # velocity control gains
+        "kp": 100.0,  
+        "kv": 10.0,   
     }
     
     return env_cfg, reward_scales, robot_cfg
@@ -135,7 +137,7 @@ def main():
     # Update configurations with actual dimensions
     env_cfg["num_obs"] = actual_num_obs
     env_cfg["num_actions"] = actual_num_actions
-    env_cfg["action_scales"] = [0.5] * actual_num_actions  # Conservative scaling
+    env_cfg["action_scales"] = [0.3] * actual_num_actions  # Conservative but reasonable movement
     
     # Clean up temp environment
     del temp_env
@@ -184,5 +186,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import torch
     main()
